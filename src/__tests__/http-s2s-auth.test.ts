@@ -37,6 +37,7 @@ import { startHttpTransport } from '../http.js';
 const S2S_SECRET = 'test-s2s-secret-do-not-log';
 const ENV_ACCESS_TOKEN = 'env-access-token-must-not-be-used';
 const HEADER_ACCESS_TOKEN = 'header-access-token-from-gateway';
+const realFetch = globalThis.fetch.bind(globalThis);
 
 const ENV_KEYS = [
   'CONDUIT_S2S_SECRET',
@@ -138,14 +139,27 @@ beforeEach(() => {
 
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () =>
-      new Response(JSON.stringify({ name: 'Acme' }), {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      // The tests call fetch() against the local server. Only vendor API calls are stubbed.
+      if (url.startsWith('http://127.0.0.1') || url.startsWith('http://localhost') || url.startsWith('http://[::1]')) {
+        return realFetch(input, init);
+      }
+      return new Response(JSON.stringify({ name: 'Acme' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      })
-    )
+      });
+    })
   );
 });
+
+function vendorFetchCalls(): [RequestInfo | URL, RequestInit | undefined][] {
+  return vi.mocked(fetch).mock.calls.filter((call) => {
+    const input = call[0] as RequestInfo | URL;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    return url.includes('getquickpass.com');
+  }) as [RequestInfo | URL, RequestInit | undefined][];
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -308,7 +322,7 @@ describe('HTTP /mcp authentication', () => {
     assertNoSecrets(errors.join('\n'));
     expect(getCredentialsMock).not.toHaveBeenCalled();
     expect(runWithCredentialsMock).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vendorFetchCalls()).toHaveLength(0);
   });
 
   it('returns 401 in gateway mode without credential headers and does not use env credentials', async () => {
@@ -328,7 +342,7 @@ describe('HTTP /mcp authentication', () => {
     expect(body).not.toContain(S2S_SECRET);
     expect(getCredentialsMock).not.toHaveBeenCalled();
     expect(runWithCredentialsMock).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vendorFetchCalls()).toHaveLength(0);
 
     const empty = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',
@@ -366,10 +380,9 @@ describe('HTTP /mcp authentication', () => {
       { accessToken: HEADER_ACCESS_TOKEN },
       expect.any(Function)
     );
-    const fetchMock = vi.mocked(fetch);
-    expect(fetchMock).toHaveBeenCalled();
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const headers = init.headers as Record<string, string>;
+    const vendorCalls = vendorFetchCalls();
+    expect(vendorCalls).toHaveLength(1);
+    const headers = vendorCalls[0][1]?.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Bearer ${HEADER_ACCESS_TOKEN}`);
     assertNoSecrets(errors.join('\n'));
   });
@@ -389,7 +402,7 @@ describe('HTTP /mcp authentication', () => {
     expect(JSON.stringify(body)).not.toContain(S2S_SECRET);
     expect(getCredentialsMock).not.toHaveBeenCalled();
     expect(runWithCredentialsMock).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vendorFetchCalls()).toHaveLength(0);
   });
 
   it('skips S2S in the insecure-dev bypass and still requires the gateway credential header', async () => {
