@@ -1,0 +1,23 @@
+services:
+  # Gateway mode. The access token arrives per request on X-CyberQP-Access-Token.
+  # This service sets no CYBERQP_ACCESS_TOKEN and no env_file, so a project .env
+  # cannot inject a static vendor credential into the container. Compose
+  # interpolates CONDUIT_S2S_SECRET from the environment. For AUTH_MODE=env, pass
+  # CYBERQP_ACCESS_TOKEN on that process instead (see the README).
+  cyberqp-mcp:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_HTTP_HOST=0.0.0.0
+      - MCP_HTTP_PORT=8080
+      - AUTH_MODE=gateway
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - CONDUIT_S2S_SECRET=${CONDUIT_S2S_SECRET:?set CONDUIT_S2S_SECRET}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
