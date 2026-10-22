@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from './server.js';
 import { runWithCredentials } from './client.js';
 import { logger } from './utils/logger.js';
+import { MAX_REQUEST_BODY_BYTES } from './input-limits.js';
 import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 
 // Public example values. A copied placeholder must not verify as a real secret
@@ -146,6 +147,7 @@ export async function startHttpTransport(): Promise<Server> {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
+        maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
       });
       res.on('close', () => {
         transport.close();
@@ -155,15 +157,34 @@ export async function startHttpTransport(): Promise<Server> {
       await transport.handleRequest(req, res);
     };
 
+    let accessToken: string | undefined;
     if (isGatewayMode) {
       // Gateway mode: the access token must arrive on every request. Do not
       // fall through to CYBERQP_ACCESS_TOKEN in the process environment.
-      const accessToken = headerValue(req.headers['x-cyberqp-access-token']);
+      accessToken = headerValue(req.headers['x-cyberqp-access-token']);
       if (!accessToken) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(GATEWAY_CREDENTIALS_UNAUTHORIZED));
         return;
       }
+    }
+
+    // Body cap runs only after S2S and (in gateway mode) the credential-presence
+    // check pass, so unauthenticated callers still get 401 before any 413.
+    const contentLength = Number(headerValue(req.headers['content-length']));
+    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32600, message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes` },
+          id: null,
+        })
+      );
+      return;
+    }
+
+    if (accessToken) {
       await runWithCredentials({ accessToken }, handle);
       return;
     }
